@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Token Estimation · Databricks Cost Analysis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #080d18;
+    --surface:  #0e1525;
+    --surface2: #111c30;
+    --border:   #1a2d4a;
+    --border2:  #243550;
+    --blue:     #4f9cf9;
+    --blue-dim: rgba(79,156,249,.12);
+    --orange:   #f97316;
+    --orange-dim:rgba(249,115,22,.12);
+    --purple:   #a855f7;
+    --purple-dim:rgba(168,85,247,.12);
+    --amber:    #f59e0b;
+    --green:    #34d399;
+    --text:     #e2e8f0;
+    --muted:    #64748b;
+    --dim:      #94a3b8;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    min-height: 100vh;
+    padding: 0;
+  }
+
+  /* ── Scanline texture ─────────────────────────────────────────── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,.06) 2px,
+      rgba(0,0,0,.06) 4px
+    );
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  /* ── Layout ───────────────────────────────────────────────────── */
+  .page {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 48px 36px 64px;
+  }
+
+  /* ── Header ───────────────────────────────────────────────────── */
+  .header {
+    margin-bottom: 40px;
+    opacity: 0;
+    animation: fadeUp .6s ease forwards;
+  }
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--blue);
+    box-shadow: 0 0 10px var(--blue);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100%{opacity:1;transform:scale(1)}
+    50%{opacity:.6;transform:scale(.85)}
+  }
+  .eyebrow-text {
+    font-size: 10px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--blue);
+    font-weight: 600;
+  }
+  h1 {
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: clamp(22px, 4vw, 34px);
+    font-weight: 700;
+    color: #f1f5f9;
+    letter-spacing: -.01em;
+    line-height: 1.2;
+  }
+  .subtitle {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: .04em;
+  }
+
+  /* ── Divider ──────────────────────────────────────────────────── */
+  hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+
+  /* ── Methodology strip ────────────────────────────────────────── */
+  .meth-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px,1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 28px;
+    opacity: 0;
+    animation: fadeUp .6s .1s ease forwards;
+  }
+  .meth-cell {
+    background: var(--surface);
+    padding: 18px 20px;
+    border-top: 2px solid var(--blue);
+  }
+  .meth-cell:nth-child(2){ border-top-color: #e879f9; }
+  .meth-cell:nth-child(3){ border-top-color: var(--orange); }
+  .meth-cell:nth-child(4){ border-top-color: var(--amber); }
+  .meth-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .meth-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--blue);
+    line-height: 1.3;
+  }
+  .meth-cell:nth-child(2) .meth-value{ color: #e879f9; }
+  .meth-cell:nth-child(3) .meth-value{ color: var(--orange); }
+  .meth-cell:nth-child(4) .meth-value{ color: var(--amber); }
+  .meth-note {
+    font-size: 10px;
+    color: var(--dim);
+    margin-top: 4px;
+    line-height: 1.5;
+  }
+
+  /* ── Section title ────────────────────────────────────────────── */
+  .section-title {
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-title::after {
+    content:'';
+    flex:1;
+    height:1px;
+    background: var(--border);
+  }
+
+  /* ── Scenario cards ───────────────────────────────────────────── */
+  .scenario-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  @media(max-width:700px){ .scenario-grid{ grid-template-columns:1fr; } }
+
+  .scenario-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    opacity: 0;
+    animation: fadeUp .6s ease forwards;
+  }
+  .scenario-card:nth-child(1){ animation-delay:.15s; border-top: 3px solid var(--blue); }
+  .scenario-card:nth-child(2){ animation-delay:.25s; border-top: 3px solid var(--orange); }
+  .scenario-card:nth-child(3){ animation-delay:.35s; border-top: 3px solid var(--purple); }
+
+  .card-head {
+    padding: 14px 16px 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .card-label {
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .badge {
+    font-size: 9px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 20px;
+    font-weight: 600;
+  }
+  .badge-blue  { background: var(--blue-dim);   color: var(--blue); }
+  .badge-orange{ background: var(--orange-dim); color: var(--orange); }
+  .badge-purple{ background: var(--purple-dim); color: var(--purple); }
+
+  .card-rows { padding: 8px 0; }
+  .card-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 16px;
+    border-bottom: 1px solid rgba(26,45,74,.5);
+    transition: background .15s;
+  }
+  .card-row:last-child{ border-bottom: none; }
+  .card-row:hover{ background: rgba(79,156,249,.04); }
+  .row-label { font-size: 11px; color: var(--muted); }
+  .row-value { font-size: 11px; color: var(--text); font-weight: 500; }
+  .card-row.highlight { background: var(--surface2); }
+  .card-row.highlight .row-label{ color: var(--dim); font-weight:500; }
+
+  /* ── Tables ───────────────────────────────────────────────────── */
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 28px;
+    opacity: 0;
+    animation: fadeUp .6s .4s ease forwards;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  th {
+    padding: 11px 14px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    color: var(--muted);
+    font-weight: 500;
+    text-align: right;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+  }
+  th:first-child { text-align: left; }
+  td {
+    padding: 10px 14px;
+    font-size: 11.5px;
+    text-align: right;
+    color: var(--text);
+    border-bottom: 1px solid rgba(26,45,74,.5);
+    transition: background .12s;
+  }
+  td:first-child { text-align: left; font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(79,156,249,.035); }
+  .c-blue   { color: var(--blue)   !important; font-weight: 600 !important; }
+  .c-orange { color: var(--orange) !important; font-weight: 600 !important; }
+  .c-purple { color: var(--purple) !important; font-weight: 600 !important; }
+  .c-muted  { color: var(--muted)  !important; }
+  .provider-header td {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    color: var(--muted);
+    background: rgba(10,18,35,.6);
+    padding: 7px 14px;
+    border-bottom: 1px solid var(--border2);
+  }
+  .provider-header td:first-child { font-weight: 700; }
+
+  /* ── Notes box ────────────────────────────────────────────────── */
+  .notes-box {
+    background: rgba(14,21,37,.8);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--amber);
+    border-radius: 10px;
+    padding: 20px 22px;
+    opacity: 0;
+    animation: fadeUp .6s .6s ease forwards;
+  }
+  .notes-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin-bottom: 12px;
+  }
+  .note-item {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 9px;
+    font-size: 11px;
+    color: var(--dim);
+    line-height: 1.6;
+  }
+  .note-item:last-child{ margin-bottom:0; }
+  .note-icon { color: var(--amber); flex-shrink: 0; font-size: 11px; }
+  .note-item strong { color: var(--text); }
+
+  /* ── Source links ─────────────────────────────────────────────── */
+  .sources {
+    margin-top: 28px;
+    opacity: 0;
+    animation: fadeUp .6s .7s ease forwards;
+  }
+  .source-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    margin-bottom: 7px;
+    font-size: 10.5px;
+    color: var(--dim);
+  }
+  .source-tag {
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: var(--muted);
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Footer ───────────────────────────────────────────────────── */
+  .footer {
+    margin-top: 48px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+    font-size: 9.5px;
+    color: var(--muted);
+    text-align: center;
+    letter-spacing: .06em;
+    opacity: 0;
+    animation: fadeUp .6s .8s ease forwards;
+  }
+
+  /* ── DBU note ─────────────────────────────────────────────────── */
+  .dbu-note {
+    background: var(--blue-dim);
+    border: 1px solid rgba(79,156,249,.2);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 28px;
+    font-size: 11px;
+    color: var(--dim);
+    line-height: 1.7;
+    opacity: 0;
+    animation: fadeUp .6s .35s ease forwards;
+  }
+  .dbu-note strong { color: var(--blue); }
+
+  @keyframes fadeUp {
+    from{ opacity:0; transform:translateY(14px); }
+    to  { opacity:1; transform:translateY(0); }
+  }
+
+  /* ── Glowing totals row ───────────────────────────────────────── */
+  .glow-row td {
+    background: var(--surface2);
+    border-top: 1px solid var(--border2);
+  }
+  /* ── Tier buttons ─────────────────────────────────────────────── */
+  .tier-btn {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 5px;
+    color: var(--dim);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    padding: 6px 10px;
+    cursor: pointer;
+    text-align: left;
+    transition: all .15s;
+  }
+  .tier-btn:hover { border-color: var(--amber); color: var(--text); }
+  .tier-btn.active { background: rgba(245,158,11,.12); border-color: var(--amber); color: var(--amber); font-weight: 600; }
+
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="eyebrow">
+      <div class="dot"></div>
+      <span class="eyebrow-text">LLM API Cost Analysis · Databricks · March 2026</span>
+    </div>
+    <h1>Token Estimation Report</h1>
+    <div class="subtitle">Call Transcript Processing · Daily Volume Scenarios · Worst-Case Output Budget</div>
+  </div>
+
+  <hr>
+
+  <!-- Methodology -->
+  <div class="meth-strip">
+    <div class="meth-cell">
+      <div class="meth-label">Conversion Rule</div>
+      <div class="meth-value" id="meth-tpw-value">1 token ≈ 0.75 words</div>
+      <div class="meth-note" id="meth-tpw-note">BPE/WordPiece standard<br>1.333 tokens per word</div>
+    </div>
+    <div class="meth-cell">
+      <div class="meth-label">System Prompt</div>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+        <input id="sys-words-input" type="number" value="708" min="0" max="99999" step="1"
+          oninput="onSysWordsChange(this.value)"
+          style="background:var(--surface2);border:1px solid var(--border2);border-radius:5px;color:#e879f9;font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600;padding:3px 7px;width:76px;outline:none;" />
+        <span style="color:var(--muted); font-size:10px;">words / call</span>
+      </div>
+      <div style="margin-top:7px; font-size:11px; color:var(--dim); line-height:1.8;">
+        <span style="color:var(--muted);">×</span> <span id="sys-tpw-display" style="color:var(--dim);">1.333</span>
+        <span style="color:var(--muted);"> = </span>
+        <span id="sys-token-display" style="color:#e879f9; font-weight:700; font-size:13px;">944</span>
+        <span style="color:var(--muted);"> tokens / call</span>
+      </div>
+      <div class="meth-note" style="margin-top:2px;">Appended to every call</div>
+    </div>
+    <div class="meth-cell">
+      <div class="meth-label">Output Budget</div>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+        <input id="out-input" type="number" value="512" min="1" max="99999" step="1"
+          oninput="onOutChange(this.value)"
+          style="background:var(--surface2);border:1px solid var(--border2);border-radius:5px;color:var(--orange);font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600;padding:3px 7px;width:76px;outline:none;" />
+        <span style="color:var(--muted); font-size:10px;">tokens / call</span>
+      </div>
+
+    </div>
+    <div class="meth-cell">
+      <div class="meth-label">DBU Rate ($/DBU)</div>
+      <div style="display:flex; flex-direction:column; gap:8px; margin-top:6px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:9px; text-transform:uppercase; letter-spacing:.1em; color:#e879f9; width:52px; flex-shrink:0;">Claude</span>
+          <span style="color:var(--amber); font-size:12px; font-weight:600;">$</span>
+          <input id="dbu-claude" type="number" value="0.11" min="0.01" max="2" step="0.01"
+            oninput="onDbuChange('claude',this.value)"
+            style="background:var(--surface2);border:1px solid var(--border2);border-radius:5px;color:var(--amber);font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;padding:3px 7px;width:66px;outline:none;" />
+          <span style="color:var(--muted); font-size:10px;">/ DBU</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:9px; text-transform:uppercase; letter-spacing:.1em; color:var(--blue); width:52px; flex-shrink:0;">GPT</span>
+          <span style="color:var(--amber); font-size:12px; font-weight:600;">$</span>
+          <input id="dbu-gpt" type="number" value="0.07" min="0.01" max="2" step="0.01"
+            oninput="onDbuChange('gpt',this.value)"
+            style="background:var(--surface2);border:1px solid var(--border2);border-radius:5px;color:var(--amber);font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;padding:3px 7px;width:66px;outline:none;" />
+          <span style="color:var(--muted); font-size:10px;">/ DBU</span>
+        </div>
+      </div>
+      <div class="meth-note" style="margin-top:6px;">Per-provider promotional rates</div>
+    </div>
+  </div>
+
+  <!-- Scenario Cards -->
+  <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
+    <div class="section-title" style="margin-bottom:0; flex:1;">Daily Volume Scenarios</div>
+    <div style="display:flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--border2); border-radius:8px; padding:8px 12px;">
+      <span style="font-size:9px; text-transform:uppercase; letter-spacing:.12em; color:var(--muted);">Tokens / word</span>
+      <button onclick="setTPW(4/3,'standard')"  class="tier-btn active" id="tpw0" style="padding:4px 10px;">1.333 — Standard English</button>
+      <button onclick="setTPW(1.35,'spoken')"   class="tier-btn"        id="tpw1" style="padding:4px 10px;">1.35 — Spoken / Jargon avg</button>
+      <button onclick="setTPW(1.5,'heavy')"     class="tier-btn"        id="tpw2" style="padding:4px 10px;">1.5 — Heavy Jargon / Non-English</button>
+    </div>
+  </div>
+  <div class="scenario-grid" id="scenarios"></div>
+
+  <!-- Cost Table -->
+  <div class="section-title">Estimated Daily Cost — Databricks Pricing</div>
+  <div class="table-wrap">
+    <table id="cost-table">
+      <thead>
+        <tr>
+          <th rowspan="2" style="vertical-align:bottom;">Model</th>
+          <th colspan="2" class="c-blue" style="text-align:center; border-bottom:1px solid var(--border2);">Baseline (1×)</th>
+          <th colspan="2" class="c-orange" style="text-align:center; border-bottom:1px solid var(--border2);">1.5× Growth</th>
+          <th colspan="2" class="c-purple" style="text-align:center; border-bottom:1px solid var(--border2);">2× Growth</th>
+        </tr>
+        <tr>
+          <th class="c-blue">Total DBU / day</th>
+          <th class="c-blue">Total $ / day</th>
+          <th class="c-orange">Total DBU / day</th>
+          <th class="c-orange">Total $ / day</th>
+          <th class="c-purple">Total DBU / day</th>
+          <th class="c-purple">Total $ / day</th>
+        </tr>
+      </thead>
+      <tbody id="cost-body"></tbody>
+    </table>
+  </div>
+
+  <!-- Notes -->
+  <div class="notes-box">
+    <div class="notes-title">⚠ Important Estimation Notes</div>
+    <div class="note-item"><span class="note-icon">→</span><span>⚠ Worst case is <strong>512 tokens / call</strong>, which is the maximum output token limit set for these models — actual average likely 200–400; even the difference of 100 tokens saves significantly at 6,700+ calls/day.</span></div>
+    <div class="note-item"><span class="note-icon">→</span><span>Databricks bills in <strong>DBUs not USD</strong>. The $0.07/DBU rate is the public pay-per-token promotional rate. Enterprise contracts and committed-use discounts (1 or 3 year) can lower this by up to 37%.</span></div>
+    <div class="note-item"><span class="note-icon">→</span><span>The <strong>system prompt (944 tokens)</strong> is applied per call. At baseline that alone costs ~6.3M input tokens/day — trimming even 200 words saves ~1.7M tokens/day.</span></div>
+    <div class="note-item"><span class="note-icon">→</span><span>Call transcript tokenization: English averages 0.75 words/token, but spoken language with jargon, numbers, or non-English content may tokenize at <strong>1.2–1.5× the word count</strong>.</span></div>
+    <div class="note-item"><span class="note-icon">→</span><span>At this volume, Databricks recommends <strong>Provisioned Throughput</strong> over pay-per-token — it offers guaranteed capacity and can be more economical for high, sustained call rates.</span></div>
+  </div>
+
+  <!-- Sources -->
+  <div class="sources">
+    <div class="section-title" style="margin-top:28px">Pricing Sources</div>
+    <div class="source-row">
+      <span class="source-tag">Claude / GPT</span>
+      <a href="https://www.databricks.com/product/pricing/proprietary-foundation-model-serving" target="_blank">databricks.com/product/pricing/proprietary-foundation-model-serving</a>
+    </div>
+    <div class="source-row">
+      <span class="source-tag">Supported Models</span>
+      <a href="https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/supported-models" target="_blank">docs.databricks.com/aws/en/machine-learning/foundation-model-apis/supported-models</a>
+    </div>
+  </div>
+
+  <div class="footer">
+    Token estimates · BPE standard 1 token = 0.75 words · System prompt 708 words = 944 tokens · Output 512/call worst case
+    · DBU rate ~$0.07 · Prices indicative only — verify before budgeting · Generated March 2026
+  </div>
+
+</div>
+
+<script>
+const BASE_WORDS = 6_421_863;
+const BASE_CALLS = 6_700;
+let TPW = 4/3;
+let SYS_WORDS = 708;
+let SYS = Math.round(SYS_WORDS * TPW);
+let OUT = 512;
+let CLAUDE_DBU = 0.11;
+let GPT_DBU    = 0.07;
+
+const SCENARIOS = [
+  { label: "Baseline (1×)", mult: 1,   cls: "c-blue",   badge: "badge-blue"   },
+  { label: "1.5× Growth",   mult: 1.5, cls: "c-orange", badge: "badge-orange" },
+  { label: "2× Growth",     mult: 2.0, cls: "c-purple", badge: "badge-purple" },
+];
+
+// [provider, name, inDBU/1M, outDBU/1M]
+const MODELS = [
+  ["Anthropic", "Claude Opus 4.6",        71.429,  357.143],
+  ["Anthropic", "Claude Opus 4.5",        71.429,  357.143],
+  ["Anthropic", "Claude Opus 4 / 4.1",   214.286, 1071.429],
+  ["Anthropic", "Claude Sonnet 4.5/4.6",  42.857,  214.286],
+  ["Anthropic", "Claude Sonnet 4 / 4.1",  42.857,  214.286],
+  ["Anthropic", "Claude Haiku 4.5",       14.286,   71.429],
+  ["OpenAI",    "GPT 5.2",                25.000,  200.000],
+  ["OpenAI",    "GPT 5.1",                17.857,  142.857],
+  ["OpenAI",    "GPT 5.1 Codex Max",      17.857,  142.857],
+  ["OpenAI",    "GPT 5",                  17.857,  142.857],
+  ["OpenAI",    "GPT 5 mini",              3.571,   28.571],
+  ["OpenAI",    "GPT 5.1 Codex Mini",      3.571,   28.571],
+  ["OpenAI",    "GPT 5 nano",              0.714,    5.714],
+];
+
+function fmt(n)  { return n.toLocaleString("en-US", { maximumFractionDigits: 0 }); }
+function fmtM(n) { return (n/1e6).toFixed(2) + "M"; }
+function fmtD(n) { return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+function compute(mult) {
+  const words = BASE_WORDS * mult;
+  const calls = BASE_CALLS * mult;
+  const wpc   = words / calls;
+  const tpc   = wpc * TPW;
+  const ipc   = tpc + SYS;
+  return { words, calls, wpc, tpc, ipc, opc: OUT,
+    totalI: ipc * calls, totalO: OUT * calls, total: (ipc + OUT) * calls };
+}
+
+function getData() { return SCENARIOS.map(s => ({ ...s, d: compute(s.mult) })); }
+
+// ── Scenario cards ────────────────────────────────────────────────────────────
+function renderCards() {
+  const grid = document.getElementById("scenarios");
+  grid.innerHTML = '';
+  getData().forEach(({ label, cls, badge, d }) => {
+    const card = document.createElement("div");
+    card.className = "scenario-card";
+    const rows = [
+      ["Avg calls / day",                                            fmt(Math.round(d.calls))],
+      ["Avg words / day",                                            fmtM(d.words)],
+      ["Avg words / call",                                       fmt(Math.round(d.wpc))],
+      ["Avg transcript tokens / call",                               fmt(Math.round(d.tpc))],
+      ["System prompt tokens / call",                            fmt(SYS)],
+      ["Avg input tokens / call<br>(transcript + system prompt)",   `<span class="${cls}">${fmt(Math.round(d.ipc))}</span>`],
+      ["Output tokens / call", fmt(OUT)],
+      ["Total input tokens / day",                              `<span class="${cls}">${fmtM(d.totalI)}</span>`],
+      ["Total output tokens / day",                             `<span class="${cls}">${fmtM(d.totalO)}</span>`],
+      ["Total tokens / day",                                    `<span class="${cls}" style="font-size:13px;font-weight:700">${fmtM(d.total)}</span>`],
+    ];
+    card.innerHTML = `
+      <div class="card-head">
+        <span class="card-label">${label}</span>
+        <span class="badge ${badge}">${fmt(Math.round(d.calls))} calls/day</span>
+      </div>
+      <div class="card-rows">
+        ${rows.map((r, ri) => `
+          <div class="card-row ${ri >= 7 ? 'highlight' : ''}">
+            <span class="row-label">${r[0]}</span>
+            <span class="row-value">${r[1]}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+// ── Cost table ────────────────────────────────────────────────────────────────
+const CLASSES_DBU = ["c-blue", "c-orange", "c-purple"];
+const CLASSES_USD = ["c-blue", "c-orange", "c-purple"];
+
+function fmtDBU(n) { return n.toLocaleString("en-US", { maximumFractionDigits: 0 }); }
+
+function renderCostTable() {
+  const tbody = document.getElementById("cost-body");
+  tbody.innerHTML = '';
+  let lastProvider = null;
+  const data = getData();
+
+  MODELS.forEach(([provider, name, inDBU, outDBU]) => {
+    if (provider !== lastProvider) {
+      lastProvider = provider;
+      const hdr = document.createElement("tr");
+      hdr.className = "provider-header";
+      hdr.innerHTML = `<td colspan="7">${provider}</td>`;
+      tbody.appendChild(hdr);
+    }
+    const dbuRate = provider === "Anthropic" ? CLAUDE_DBU : GPT_DBU;
+    const tr = document.createElement("tr");
+    let cells = `<td>${name}</td>`;
+    data.forEach(({ d }, i) => {
+      const totalDBU = (d.totalI / 1e6) * inDBU + (d.totalO / 1e6) * outDBU;
+      const totalUSD = totalDBU * dbuRate;
+      cells += `
+        <td class="${CLASSES_DBU[i]}">${fmtDBU(totalDBU)}</td>
+        <td class="${CLASSES_USD[i]}">${fmtD(totalUSD)}</td>
+      `;
+    });
+    tr.innerHTML = cells;
+    tbody.appendChild(tr);
+  });
+}
+
+function onDbuChange(provider, val) {
+  const v = parseFloat(val);
+  if (!isNaN(v) && v > 0) {
+    if (provider === 'claude') CLAUDE_DBU = v;
+    else GPT_DBU = v;
+    renderCostTable();
+  }
+}
+
+function updateSysTokenDisplay() {
+  SYS = Math.round(SYS_WORDS * TPW);
+  const el = document.getElementById('sys-token-display');
+  if (el) el.textContent = SYS.toLocaleString("en-US");
+  const tpwEl = document.getElementById('sys-tpw-display');
+  if (tpwEl) tpwEl.textContent = TPW.toFixed(3).replace(/\.?0+$/, '');
+}
+
+function onSysWordsChange(val) {
+  const v = parseInt(val);
+  if (!isNaN(v) && v >= 0) { SYS_WORDS = v; updateSysTokenDisplay(); renderAll(); }
+}
+
+function onOutChange(val) {
+  const v = parseInt(val);
+  if (!isNaN(v) && v >= 1) { OUT = v; renderAll(); }
+}
+
+function renderAll() { renderCards(); renderCostTable(); }
+
+function setTPW(rate, mode) {
+  TPW = rate;
+  document.querySelectorAll('.tier-btn[id^="tpw"]').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  const mv = document.getElementById('meth-tpw-value');
+  const mn = document.getElementById('meth-tpw-note');
+  if (mv) {
+    if (mode === 'standard') {
+      mv.textContent = '1 token ≈ 0.75 words';
+      mn.innerHTML   = 'BPE/WordPiece standard<br>1.333 tokens per word';
+    } else if (mode === 'spoken') {
+      mv.textContent = '1 token ≈ 0.74 words';
+      mn.innerHTML   = 'Spoken / jargon average<br>1.35 tokens per word';
+    } else {
+      mv.textContent = '1 token ≈ 0.67 words';
+      mn.innerHTML   = 'Heavy jargon / non-English<br>1.5 tokens per word';
+    }
+  }
+  updateSysTokenDisplay();
+  renderAll();
+}
+
+updateSysTokenDisplay();
+renderAll();
+</script>
+</body>
+</html>
