@@ -26,3 +26,5 @@ Since it's a single self-contained HTML file, you can also upload it directly to
 - [Supported models](https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/supported-models)
 
 > Prices are indicative only — verify before budgeting.
+
+![Alt text](image-url) 
