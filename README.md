@@ -27,4 +27,4 @@ Since it's a single self-contained HTML file, you can also upload it directly to
 
 > Prices are indicative only — verify before budgeting.
 
-![Alt text](image-url) 
+![Alt text](demo_img.png) 
